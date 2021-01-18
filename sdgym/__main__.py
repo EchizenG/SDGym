@@ -51,6 +51,7 @@ def _run(args):
         synthesizers=synthesizers,
         datasets=args.datasets,
         iterations=args.iterations,
+        add_leaderboard=False,
         output_path=args.output_path,
         cache_dir=args.cache_dir,
         workers=workers,
@@ -103,7 +104,7 @@ def _get_parser():
                      help='Models/s to be benchmarked. Accepts multiple names.')
     run.add_argument('-d', '--datasets', nargs='+',
                      help='Datasets/s to be used. Accepts multiple names.')
-    run.add_argument('-i', '--iterations', type=int, default=3,
+    run.add_argument('-i', '--iterations', type=int, default=1,
                      help='Number of iterations.')
     run.add_argument('-D', '--distributed', action='store_true',
                      help='Distribute computation using dask.')
@@ -159,3 +160,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

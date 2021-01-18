@@ -2,13 +2,16 @@ import numpy as np
 import torch
 import torch.optim as optim
 import torch.utils.data
-from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential
+from random import randint
+from torch.nn import BatchNorm1d, LeakyReLU, Linear, Module, Sequential, Softmax, PReLU, Sigmoid, Dropout, ReLU
 from torch.nn import functional as F
 
 from sdgym.synthesizers.base import BaseSynthesizer
 from sdgym.synthesizers.utils import BGMTransformer
 
+num_gen = 4
 
+# ctgan's Discriminator
 class Discriminator(Module):
     def __init__(self, input_dim, dis_dims, pack=10):
         super(Discriminator, self).__init__()
@@ -23,14 +26,38 @@ class Discriminator(Module):
                 Dropout(0.5)
             ]
             dim = item
-        seq += [Linear(dim, 1)]
+        seq += [Linear(dim, num_gen+1)]
         self.seq = Sequential(*seq)
 
     def forward(self, input):
         assert input.size()[0] % self.pack == 0
         return self.seq(input.view(-1, self.packdim))
 
+''' madgan's discriminator
+class Discriminator(Module):
+    def __init__(self, input_dim, pack=1):
+        super(Discriminator, self).__init__()
+        dim = input_dim * pack
+        self.pack = pack
+        self.packdim = dim
+        seq = []
+        self.l1 = Sequential(
+                        Linear(self.packdim, 128),
+                        LeakyReLU(0.2))
+        self.l2 = Sequential(
+                        Linear(128, num_gen+1),
+                        Softmax())
 
+    def forward(self, input):
+        assert input.size()[0] % self.pack == 0
+        input.view(-1, self.packdim)
+        input = self.l1(input)
+        output = self.l2(input)
+
+        return output
+'''
+
+#ctgan's generator
 class Residual(Module):
     def __init__(self, i, o):
         super(Residual, self).__init__()
@@ -60,8 +87,43 @@ class Generator(Module):
 
     def forward(self, input):
         data = self.seq(input)
+
         return data
 
+'''madgan's generator
+class formerNet(Module):
+    def __init__(self, embedding_dim, h_dim):
+        """
+        In the constructor we instantiate five parameters and assign them as members.
+        """
+        super(formerNet, self).__init__()
+        self.former = Sequential(
+        Linear(embedding_dim, h_dim),
+        BatchNorm1d(h_dim),
+        PReLU()
+        )
+    def forward(self,x):
+        x = self.former(x)             # linear output
+        return x
+
+class Generator(Module):
+    def __init__(self, embedding_dim, h_dim, data_dim):
+        """
+        In the constructor we instantiate five parameters and assign them as members.
+        """
+        super(Generator, self).__init__()
+        self.latter = Sequential(
+        formerNet(embedding_dim, h_dim),
+        Linear(h_dim, h_dim),
+        BatchNorm1d(h_dim),
+        PReLU(),
+        Linear(h_dim, data_dim),
+        Sigmoid()
+        )
+    def forward(self, x):
+        x = self.latter(x)
+        return x
+'''
 
 def apply_activate(data, output_info):
     data_t = []
@@ -275,7 +337,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                  dis_dim=(256, 256),
                  l2scale=1e-6,
                  batch_size=500,
-                 epochs=300):
+                 epochs=3):
 
         self.embedding_dim = embedding_dim
         self.gen_dim = gen_dim
@@ -297,98 +359,118 @@ class CTGANSynthesizer(BaseSynthesizer):
         data_dim = self.transformer.output_dim
         self.cond_generator = Cond(train_data, self.transformer.output_info)
 
-        self.generator = Generator(
-            self.embedding_dim + self.cond_generator.n_opt,
-            self.gen_dim,
-            data_dim).to(self.device)
+        self.generator = []
+        for i in range(num_gen):
+            self.generator.append(
+                Generator(
+                self.embedding_dim + self.cond_generator.n_opt,
+                self.gen_dim,
+                data_dim).to(self.device)
+                )
 
         discriminator = Discriminator(
             data_dim + self.cond_generator.n_opt,
             self.dis_dim).to(self.device)
-
-        optimizerG = optim.Adam(
-            self.generator.parameters(), lr=2e-4, betas=(0.5, 0.9), weight_decay=self.l2scale)
+        optimizerG = []
+        for i in range(num_gen):
+            optimizerG.append(optim.Adam(
+            self.generator[i].parameters(), lr=2e-4, betas=(0.5, 0.9), weight_decay=self.l2scale))
         optimizerD = optim.Adam(discriminator.parameters(), lr=2e-4, betas=(0.5, 0.9))
 
         assert self.batch_size % 2 == 0
-        mean = torch.zeros(self.batch_size, self.embedding_dim, device=self.device)
-        std = mean + 1
+        # mean = torch.zeros(self.batch_size, self.embedding_dim, device=self.device)
+        # std = mean + 1
 
         steps_per_epoch = len(train_data) // self.batch_size
+        loss = torch.nn.CrossEntropyLoss()
+        label_G = torch.autograd.Variable(torch.LongTensor(int(self.batch_size/10)))
+        label_G = label_G.to(self.device)
+        label_D = torch.autograd.Variable(torch.LongTensor(int(self.batch_size/10)))
+        label_D = label_D.to(self.device)
+
         for i in range(self.epochs):
             for id_ in range(steps_per_epoch):
-                fakez = torch.normal(mean=mean, std=std)
+                for j in range(num_gen):
+                    mean = torch.zeros(self.batch_size, self.embedding_dim, device=self.device)
+                    std = mean + 1
+                    fakez = torch.normal(mean=mean, std=std)
+                    # fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
+                    condvec = self.cond_generator.sample(self.batch_size)
+                    if condvec is None:
+                        c1, m1, col, opt = None, None, None, None
+                        real = data_sampler.sample(self.batch_size, col, opt)
+                    else:
+                        c1, m1, col, opt = condvec
+                        c1 = torch.from_numpy(c1).to(self.device)
+                        m1 = torch.from_numpy(m1).to(self.device)
+                        fakez = torch.cat([fakez, c1], dim=1)
 
-                condvec = self.cond_generator.sample(self.batch_size)
-                if condvec is None:
-                    c1, m1, col, opt = None, None, None, None
-                    real = data_sampler.sample(self.batch_size, col, opt)
-                else:
-                    c1, m1, col, opt = condvec
-                    c1 = torch.from_numpy(c1).to(self.device)
-                    m1 = torch.from_numpy(m1).to(self.device)
-                    fakez = torch.cat([fakez, c1], dim=1)
+                        perm = np.arange(self.batch_size)
+                        np.random.shuffle(perm)
+                        real = data_sampler.sample(self.batch_size, col[perm], opt[perm])
+                        c2 = c1[perm]
 
-                    perm = np.arange(self.batch_size)
-                    np.random.shuffle(perm)
-                    real = data_sampler.sample(self.batch_size, col[perm], opt[perm])
-                    c2 = c1[perm]
+                    fake = self.generator[j](fakez)
+                    fakeact = apply_activate(fake, self.transformer.output_info)
 
-                fake = self.generator(fakez)
-                fakeact = apply_activate(fake, self.transformer.output_info)
+                    real = torch.from_numpy(real.astype('float32')).to(self.device)
 
-                real = torch.from_numpy(real.astype('float32')).to(self.device)
+                    if c1 is not None:
+                        fake_cat = torch.cat([fakeact, c1], dim=1)
+                        real_cat = torch.cat([real, c2], dim=1)
+                    else:
+                        real_cat = real
+                        fake_cat = fake
 
-                if c1 is not None:
-                    fake_cat = torch.cat([fakeact, c1], dim=1)
-                    real_cat = torch.cat([real, c2], dim=1)
-                else:
-                    real_cat = real
-                    fake_cat = fake
+                    y_fake = discriminator(fake_cat)
+                    y_real = discriminator(real_cat)
 
-                y_fake = discriminator(fake_cat)
-                y_real = discriminator(real_cat)
+                    loss_d_real = loss(y_real, label_D.fill_(num_gen + 0.1*randint(-1, 1)))
+                    loss_d_fake = loss(y_fake, label_G.fill_(j + 0.1*randint(-1, 1)))
+                    loss_d = loss_d_real + loss_d_fake
 
-                loss_d = -(torch.mean(y_real) - torch.mean(y_fake))
-                pen = calc_gradient_penalty(discriminator, real_cat, fake_cat, self.device)
+                    # loss_d = -(torch.mean(y_real) - torch.mean(y_fake))
+                    pen = calc_gradient_penalty(discriminator, real_cat, fake_cat, self.device)
 
-                optimizerD.zero_grad()
-                pen.backward(retain_graph=True)
-                loss_d.backward()
-                optimizerD.step()
+                    optimizerD.zero_grad()
+                    pen.backward(retain_graph=True)
+                    loss_d.backward()
+                    optimizerD.step()
+                for j in range(num_gen):
+                    # fakez = torch.normal(mean=mean, std=std)
+                    fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
+                    condvec = self.cond_generator.sample(self.batch_size)
 
-                fakez = torch.normal(mean=mean, std=std)
-                condvec = self.cond_generator.sample(self.batch_size)
+                    if condvec is None:
+                        c1, m1, col, opt = None, None, None, None
+                    else:
+                        c1, m1, col, opt = condvec
+                        c1 = torch.from_numpy(c1).to(self.device)
+                        # m1 = torch.from_numpy(m1).to(self.device)
+                        fakez = torch.cat([fakez, c1], dim=1)
 
-                if condvec is None:
-                    c1, m1, col, opt = None, None, None, None
-                else:
-                    c1, m1, col, opt = condvec
-                    c1 = torch.from_numpy(c1).to(self.device)
-                    m1 = torch.from_numpy(m1).to(self.device)
-                    fakez = torch.cat([fakez, c1], dim=1)
+                    fake = self.generator[j](fakez)
+                    fakeact = apply_activate(fake, self.transformer.output_info)
 
-                fake = self.generator(fakez)
-                fakeact = apply_activate(fake, self.transformer.output_info)
+                    if c1 is not None:
+                        y_fake = discriminator(torch.cat([fakeact, c1], dim=1))
+                    else:
+                        y_fake = discriminator(fakeact)
 
-                if c1 is not None:
-                    y_fake = discriminator(torch.cat([fakeact, c1], dim=1))
-                else:
-                    y_fake = discriminator(fakeact)
+                    # if condvec is None:
+                    #     cross_entropy = 0
+                    # else:
+                    #     cross_entropy = cond_loss(fake, self.transformer.output_info, c1, m1)
 
-                if condvec is None:
-                    cross_entropy = 0
-                else:
-                    cross_entropy = cond_loss(fake, self.transformer.output_info, c1, m1)
+                    loss_g = loss(y_fake, label_D.fill_(num_gen + 0.1*randint(-1,1)))
 
-                loss_g = -torch.mean(y_fake) + cross_entropy
-
-                optimizerG.zero_grad()
-                loss_g.backward()
-                optimizerG.step()
+                    optimizerG[j].zero_grad()
+                    loss_g.backward()
+                    optimizerG[j].step()
 
     def sample(self, n):
-        self.generator.eval()
+        for i in range(num_gen):
+            self.generator[i].eval()
 
         output_info = self.transformer.output_info
         steps = n // self.batch_size + 1
@@ -397,6 +479,7 @@ class CTGANSynthesizer(BaseSynthesizer):
             mean = torch.zeros(self.batch_size, self.embedding_dim)
             std = mean + 1
             fakez = torch.normal(mean=mean, std=std).to(self.device)
+            # fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
 
             condvec = self.cond_generator.sample_zero(self.batch_size)
             if condvec is None:
@@ -406,7 +489,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                 c1 = torch.from_numpy(c1).to(self.device)
                 fakez = torch.cat([fakez, c1], dim=1)
 
-            fake = self.generator(fakez)
+            fake = self.generator[randint(0, num_gen-1)](fakez)
             fakeact = apply_activate(fake, output_info)
             data.append(fakeact.detach().cpu().numpy())
 
