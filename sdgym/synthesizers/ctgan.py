@@ -9,9 +9,9 @@ from torch.nn import functional as F
 from sdgym.synthesizers.base import BaseSynthesizer
 from sdgym.synthesizers.utils import BGMTransformer
 
-num_gen = 4
+num_gen = 6
 
-# ctgan's Discriminator
+''' ctgan's Discriminator
 class Discriminator(Module):
     def __init__(self, input_dim, dis_dims, pack=10):
         super(Discriminator, self).__init__()
@@ -32,10 +32,11 @@ class Discriminator(Module):
     def forward(self, input):
         assert input.size()[0] % self.pack == 0
         return self.seq(input.view(-1, self.packdim))
+'''
 
-''' madgan's discriminator
+# madgan's discriminator
 class Discriminator(Module):
-    def __init__(self, input_dim, pack=1):
+    def __init__(self, input_dim, dis_dims, pack=1):
         super(Discriminator, self).__init__()
         dim = input_dim * pack
         self.pack = pack
@@ -45,6 +46,9 @@ class Discriminator(Module):
                         Linear(self.packdim, 128),
                         LeakyReLU(0.2))
         self.l2 = Sequential(
+                        Linear(128, 128),
+                        LeakyReLU(0.2))
+        self.l3 = Sequential(
                         Linear(128, num_gen+1),
                         Softmax())
 
@@ -52,12 +56,13 @@ class Discriminator(Module):
         assert input.size()[0] % self.pack == 0
         input.view(-1, self.packdim)
         input = self.l1(input)
-        output = self.l2(input)
+        input = self.l2(input)
+        output = self.l3(input)
 
         return output
-'''
 
-#ctgan's generator
+
+'''#ctgan's generator
 class Residual(Module):
     def __init__(self, i, o):
         super(Residual, self).__init__()
@@ -89,8 +94,8 @@ class Generator(Module):
         data = self.seq(input)
 
         return data
-
-'''madgan's generator
+'''
+#madgan's generator
 class formerNet(Module):
     def __init__(self, embedding_dim, h_dim):
         """
@@ -98,8 +103,8 @@ class formerNet(Module):
         """
         super(formerNet, self).__init__()
         self.former = Sequential(
-        Linear(embedding_dim, h_dim),
-        BatchNorm1d(h_dim),
+        Linear(embedding_dim, 128),
+        BatchNorm1d(128),
         PReLU()
         )
     def forward(self,x):
@@ -113,17 +118,17 @@ class Generator(Module):
         """
         super(Generator, self).__init__()
         self.latter = Sequential(
-        formerNet(embedding_dim, h_dim),
-        Linear(h_dim, h_dim),
-        BatchNorm1d(h_dim),
+        formerNet(embedding_dim, 128),
+        Linear(128, 128),
+        BatchNorm1d(128),
         PReLU(),
-        Linear(h_dim, data_dim),
+        Linear(128, data_dim),
         Sigmoid()
         )
     def forward(self, x):
         x = self.latter(x)
         return x
-'''
+
 
 def apply_activate(data, output_info):
     data_t = []
@@ -337,7 +342,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                  dis_dim=(256, 256),
                  l2scale=1e-6,
                  batch_size=500,
-                 epochs=3):
+                 epochs=300):
 
         self.embedding_dim = embedding_dim
         self.gen_dim = gen_dim
@@ -383,9 +388,9 @@ class CTGANSynthesizer(BaseSynthesizer):
 
         steps_per_epoch = len(train_data) // self.batch_size
         loss = torch.nn.CrossEntropyLoss()
-        label_G = torch.autograd.Variable(torch.LongTensor(int(self.batch_size/10)))
+        label_G = torch.autograd.Variable(torch.LongTensor(int(self.batch_size)))
         label_G = label_G.to(self.device)
-        label_D = torch.autograd.Variable(torch.LongTensor(int(self.batch_size/10)))
+        label_D = torch.autograd.Variable(torch.LongTensor(int(self.batch_size)))
         label_D = label_D.to(self.device)
 
         for i in range(self.epochs):
@@ -467,6 +472,13 @@ class CTGANSynthesizer(BaseSynthesizer):
                     optimizerG[j].zero_grad()
                     loss_g.backward()
                     optimizerG[j].step()
+
+                    # commonDict = {k: v for k, v in self.generator[i].state_dict().items() if 'former' in k}
+                    #
+                    # for k in range(num_gen):
+                    #     targetDict = self.generator[j].state_dict()
+                    #     targetDict.update(commonDict)
+                    #     self.generator[j].load_state_dict(targetDict)
 
     def sample(self, n):
         for i in range(num_gen):
