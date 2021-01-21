@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from sdgym.synthesizers.base import BaseSynthesizer
 from sdgym.synthesizers.utils import BGMTransformer
 
-num_gen = 4
+num_gen = 1
 
 # ctgan's Discriminator
 class Discriminator(Module):
@@ -71,23 +71,32 @@ class Residual(Module):
         out = self.relu(out)
         return torch.cat([out, input], dim=1)
 
+class FormerNet(Module):
+    def __init__(self, i, o):
+        super(FormerNet, self).__init__()
+        self.former = Sequential(
+        Linear(i, o),
+        BatchNorm1d(o),
+        ReLU()
+        )
+
+    def forward(self, input):
+        out = self.former(input)
+        return torch.cat([out, input], dim=1)
+
 
 class Generator(Module):
     def __init__(self, embedding_dim, gen_dims, data_dim):
         super(Generator, self).__init__()
         dim = embedding_dim
         seq = []
-        for item in list(gen_dims):
-            seq += [
-                Residual(dim, item)
-            ]
-            dim += item
-        seq.append(Linear(dim, data_dim))
+        seq.append(FormerNet(dim, gen_dims[0]))
+        seq.append(Residual(dim+gen_dims[0], gen_dims[1]))
+        seq.append(Linear(dim+gen_dims[0]+gen_dims[1], data_dim))
         self.seq = Sequential(*seq)
 
     def forward(self, input):
         data = self.seq(input)
-
         return data
 
 '''madgan's generator
@@ -337,7 +346,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                  dis_dim=(256, 256),
                  l2scale=1e-6,
                  batch_size=500,
-                 epochs=3):
+                 epochs=300):
 
         self.embedding_dim = embedding_dim
         self.gen_dim = gen_dim
@@ -467,6 +476,16 @@ class CTGANSynthesizer(BaseSynthesizer):
                     optimizerG[j].zero_grad()
                     loss_g.backward()
                     optimizerG[j].step()
+
+                    commonDict = {k: v
+                                  for k, v in self.generator[j].state_dict().items()
+                                  if 'former' in k
+                                  }
+
+                    for j in range(num_gen):
+                        targetDict = self.generator[j].state_dict()
+                        targetDict.update(commonDict)
+                        self.generator[j].load_state_dict(targetDict)
 
     def sample(self, n):
         for i in range(num_gen):
