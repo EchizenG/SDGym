@@ -9,8 +9,7 @@ from torch.nn import functional as F
 from sdgym.synthesizers.base import BaseSynthesizer
 from sdgym.synthesizers.utils import BGMTransformer
 
-num_gen = 1
-
+num_gen = 7
 # ctgan's Discriminator
 class Discriminator(Module):
     def __init__(self, input_dim, dis_dims, pack=10):
@@ -399,10 +398,11 @@ class CTGANSynthesizer(BaseSynthesizer):
 
         for i in range(self.epochs):
             for id_ in range(steps_per_epoch):
+                z = torch.normal(mean=mean, std=std)
                 for j in range(num_gen):
                     mean = torch.zeros(self.batch_size, self.embedding_dim, device=self.device)
                     std = mean + 1
-                    fakez = torch.normal(mean=mean, std=std)
+                    # fakez = torch.normal(mean=mean, std=std)
                     # fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
                     condvec = self.cond_generator.sample(self.batch_size)
                     if condvec is None:
@@ -412,7 +412,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                         c1, m1, col, opt = condvec
                         c1 = torch.from_numpy(c1).to(self.device)
                         m1 = torch.from_numpy(m1).to(self.device)
-                        fakez = torch.cat([fakez, c1], dim=1)
+                        fakez = torch.cat([z, c1], dim=1)
 
                         perm = np.arange(self.batch_size)
                         np.random.shuffle(perm)
@@ -447,7 +447,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                     optimizerD.step()
                 for j in range(num_gen):
                     # fakez = torch.normal(mean=mean, std=std)
-                    fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
+                    # fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
                     condvec = self.cond_generator.sample(self.batch_size)
 
                     if condvec is None:
@@ -456,7 +456,7 @@ class CTGANSynthesizer(BaseSynthesizer):
                         c1, m1, col, opt = condvec
                         c1 = torch.from_numpy(c1).to(self.device)
                         # m1 = torch.from_numpy(m1).to(self.device)
-                        fakez = torch.cat([fakez, c1], dim=1)
+                        fakez = torch.cat([z, c1], dim=1)
 
                     fake = self.generator[j](fakez)
                     fakeact = apply_activate(fake, self.transformer.output_info)
@@ -494,10 +494,11 @@ class CTGANSynthesizer(BaseSynthesizer):
         output_info = self.transformer.output_info
         steps = n // self.batch_size + 1
         data = []
+        z = torch.normal(mean=mean, std=std).to(self.device)
         for i in range(steps):
             mean = torch.zeros(self.batch_size, self.embedding_dim)
             std = mean + 1
-            fakez = torch.normal(mean=mean, std=std).to(self.device)
+            # fakez = torch.normal(mean=mean, std=std).to(self.device)
             # fakez = torch.FloatTensor(self.batch_size, self.embedding_dim).normal_(randint(-1, 1), randint(1, 2)).to(self.device)
 
             condvec = self.cond_generator.sample_zero(self.batch_size)
@@ -506,7 +507,7 @@ class CTGANSynthesizer(BaseSynthesizer):
             else:
                 c1 = condvec
                 c1 = torch.from_numpy(c1).to(self.device)
-                fakez = torch.cat([fakez, c1], dim=1)
+                fakez = torch.cat([z, c1], dim=1)
 
             fake = self.generator[randint(0, num_gen-1)](fakez)
             fakeact = apply_activate(fake, output_info)
